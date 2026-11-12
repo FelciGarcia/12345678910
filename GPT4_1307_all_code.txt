@@ -1,0 +1,505 @@
+==============================================================================
+ BUILDING APPLICATION WITH GPT-4 LAB (24CS2506)
+ Name: A CHALICE FELCI GARCIA     Register No.: URK23CS1307
+ All program code from the lab record
+==============================================================================
+
+
+==============================================================================
+ Ex.No 1 - Building E-commerce Chatbot
+ File: ecommerce_chatbot.py
+==============================================================================
+
+import pandas as pd
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+import ollama
+
+# Load model
+embedding_model = SentenceTransformer('all-MiniLM-L6-v2')  # Lightweight and effective
+
+# Load CSV and create embeddings
+faq_df = pd.read_csv("ecommerce_faq.csv")
+faq_df['embedding'] = faq_df['question'].apply(lambda q: embedding_model.encode(q))
+
+# Define Ollama model and system role
+ollama_model = "qwen2.5:0.5b"
+system_prompt = {
+    "role": "system",
+    "content": "You are a helpful assistant that answers frequently asked questions for an e-commerce store. Be concise, friendly, and professional."
+}
+
+# Function: Find most similar FAQ question
+def find_best_match(user_question):
+    user_embedding = embedding_model.encode(user_question)
+    similarities = [cosine_similarity([user_embedding], [emb])[0][0]
+                    for emb in faq_df['embedding']]
+    best_index = similarities.index(max(similarities))
+    return faq_df.iloc[best_index]['question'], faq_df.iloc[best_index]['answer']
+
+# Chat loop
+print("Welcome to E-Commerce FAQ Bot \nType 'exit' to quit.\n")
+
+while True:
+    user_input = input("You: ")
+    if user_input.lower() in ['exit', 'quit']:
+        break
+
+    matched_question, matched_answer = find_best_match(user_input)
+    prompt = [
+        system_prompt,
+        {"role": "user", "content": f"User asked: '{user_input}'\nClosest FAQ: '{matched_question}'\nAnswer accordingly."}
+    ]
+
+    response = ollama.chat(model=ollama_model, messages=prompt)
+    print("Bot:", response['message']['content'], "\n")
+
+
+==============================================================================
+ Ex.No 2 - AI-Powered Blog Content Generator
+ File: blog_generator.py
+==============================================================================
+
+import gradio as gr
+import requests
+
+# Constants
+OLLAMA_URL = "http://localhost:11434/api/generate"
+MODEL_NAME = "qwen2.5:0.5b"
+
+# Function to generate blog
+def generate_blog(outline_text):
+    outline = [line.strip() for line in outline_text.split('\n')
+               if line.strip()]
+    prompt = "Write a detailed blog post with markdown formatting based on the following outline:\n\n"
+    prompt += '\n'.join(f"{i+1}. {line}" for i, line in enumerate(outline))
+    prompt += "\n\nMake it informative, engaging, and clear."
+    response = requests.post(OLLAMA_URL, json={"model": MODEL_NAME,
+                                               "prompt": prompt,
+                                               "stream": False})
+    return response.json()["response"]
+
+# Gradio UI
+def main():
+    gr.Interface(
+        fn=generate_blog,
+        inputs=gr.Textbox(lines=10, placeholder="Enter blog outline...",
+                          label="Blog Outline"),
+        outputs=gr.Textbox(lines=20, label="Generated Blog Content"),
+        title="Ollama Blog Content Generator",
+        description="Paste your outline (one topic per line) and generate a markdown-formatted blog post."
+    ).launch()
+
+if __name__ == "__main__":
+    main()
+
+
+==============================================================================
+ Ex.No 3 - Intelligent Email Assistant
+ File: email_assistant.py
+==============================================================================
+
+import requests
+
+# Ollama API settings
+OLLAMA_URL = "http://localhost:11434/api/generate"
+MODEL_NAME = "qwen2.5:0.5b"
+
+# Step 1: FAQ Knowledge Base
+faq = {
+    "pricing": "Our basic plan starts at $10/month with premium options.",
+    "refund": "Refunds are available within 30 days of purchase. Please share your order ID.",
+    "support": "You can reach support at support@example.com, 24/7."
+}
+
+# Conversation memory
+history = []
+
+# Step 2: Check FAQ
+def check_faq(email_text):
+    for keyword, answer in faq.items():
+        if keyword in email_text.lower():
+            return answer
+    return None
+
+# Step 3: Generate AI Response with Ollama API
+def ollama_response(prompt):
+    payload = {
+        "model": MODEL_NAME,
+        "prompt": prompt,
+        "stream": False  # disable streaming for simplicity
+    }
+    response = requests.post(OLLAMA_URL, json=payload)
+    if response.status_code == 200:
+        return response.json().get("response", "").strip()
+    else:
+        return f"Error: {response.text}"
+
+# Step 4: Email Assistant Logic
+def email_assistant(email_text):
+    faq_answer = check_faq(email_text)
+    if faq_answer:
+        reply = "FAQ Reply: " + faq_answer
+    else:
+        context = "\n".join(history[-6:])  # last few exchanges
+        prompt = (f"Previous conversation:\n{context}\n\n"
+                  f"Draft a polite email reply to this message:\n\n'{email_text}'")
+        reply = "AI Reply: " + ollama_response(prompt)
+    history.append(f"Email: {email_text}")
+    history.append(reply)
+    return reply
+
+# Step 5: Test
+emails = [
+    "Tell me about pricing",
+    "How to get refund?",
+    "Need support help",
+    "Delay in my order"
+]
+
+for mail in emails:
+    print("\nEmail:", mail)
+    print(email_assistant(mail))
+
+
+==============================================================================
+ Ex.No 4 - Personalized Recommendation System
+==============================================================================
+
+------------------------------------------------------------------------------
+ Part A (Questions 1 and 2): Book recommender
+ File: recommender_books.py
+------------------------------------------------------------------------------
+
+import requests
+import numpy as np
+import pandas as pd
+import faiss
+import gradio as gr
+
+OLLAMA_URL = "http://localhost:11434/api"
+EMBED_MODEL = "nomic-embed-text"
+LLM_MODEL = "qwen2.5:0.5b"
+
+# Load the CSV database
+books = pd.read_csv("books.csv")
+books["Text"] = (books["Title"] + ". " + books["Genre"] + ". " +
+                 books["Summary"] + ". " + books["Keywords"])
+
+def get_embedding(text):
+    response = requests.post(f"{OLLAMA_URL}/embed",
+                             json={"model": EMBED_MODEL, "input": text})
+    data = response.json()
+    if "embeddings" not in data:
+        raise ValueError(f"Ollama did not return embeddings. Got: {data}")
+    return np.array(data["embeddings"][0], dtype="float32")
+
+# Build the FAISS index
+embeddings = np.array([get_embedding(t) for t in books["Text"]])
+index = faiss.IndexFlatL2(embeddings.shape[1])
+index.add(embeddings)
+
+def recommend(preferences):
+    if not preferences.strip():
+        return "Please enter your interests and preferences."
+    query_emb = np.array([get_embedding(preferences)])
+    D, I = index.search(query_emb, 3)
+    results = books.iloc[I[0]]
+    picks = "\n".join(f"{n}. {r.Title} by {r.Author} ({r.Genre})"
+                      for n, r in enumerate(results.itertuples(), 1))
+    prompt = (f'User preferences: "{preferences}"\n'
+              f"Recommended books:\n{results.to_string(index=False)}\n\n"
+              "Explain briefly why each book matches the user's preferences.")
+    response = requests.post(f"{OLLAMA_URL}/generate",
+                             json={"model": LLM_MODEL, "prompt": prompt,
+                                   "stream": False})
+    explanation = response.json().get("response", "")
+    return f"Top Recommendations:\n{picks}\n\nWhy these books:\n{explanation}"
+
+demo = gr.Interface(
+    fn=recommend,
+    inputs=gr.Textbox(label="Your interests and preferences", lines=3,
+                      placeholder="e.g., I want to study algorithms and maths"),
+    outputs=gr.Textbox(label="Recommendations", lines=15),
+    title="Personalized Book Recommendation System",
+    description="Enter your interests to get book suggestions with explanations.")
+
+if __name__ == "__main__":
+    demo.launch()
+
+
+------------------------------------------------------------------------------
+ Part B (Question 3): Extended version with domain filter (Books / Movies)
+ File: recommender_domain.py
+------------------------------------------------------------------------------
+
+import requests
+import numpy as np
+import pandas as pd
+import faiss
+import gradio as gr
+
+OLLAMA_URL = "http://localhost:11434/api"
+EMBED_MODEL = "nomic-embed-text"
+LLM_MODEL = "qwen2.5:0.5b"
+
+# Load every domain CSV and unify the column names
+FILES = {"Books": "books.csv", "Movies": "movies.csv"}
+frames = []
+for domain, path in FILES.items():
+    df = pd.read_csv(path)
+    df = df.rename(columns={"Author": "Creator", "Director": "Creator",
+                            "Plot Summary": "Summary"})
+    df["Domain"] = domain
+    frames.append(df)
+catalog = pd.concat(frames, ignore_index=True)
+catalog["Text"] = (catalog["Title"] + ". " + catalog["Genre"] + ". " +
+                   catalog["Summary"] + ". " + catalog["Keywords"])
+
+def get_embedding(text):
+    response = requests.post(f"{OLLAMA_URL}/embed",
+                             json={"model": EMBED_MODEL, "input": text})
+    data = response.json()
+    if "embeddings" not in data:
+        raise ValueError(f"Ollama did not return embeddings. Got: {data}")
+    return np.array(data["embeddings"][0], dtype="float32")
+
+# Embed the whole catalog once
+E = np.array([get_embedding(t) for t in catalog["Text"]])
+dim = E.shape[1]
+
+# One FAISS index per domain, plus one index for "All"
+indexes = {}
+for name in list(FILES) + ["All"]:
+    mask = (catalog["Domain"] == name).values if name != "All" \
+           else np.ones(len(catalog), dtype=bool)
+    idx = faiss.IndexFlatL2(dim)
+    idx.add(E[mask])
+    indexes[name] = (idx, catalog[mask].reset_index(drop=True))
+
+def recommend(preferences, domain):
+    if not preferences.strip():
+        return "Please enter your interests and preferences."
+    idx, subset = indexes[domain]
+    k = min(3, len(subset))
+    query_emb = np.array([get_embedding(preferences)])
+    D, I = idx.search(query_emb, k)
+    results = subset.iloc[I[0]]
+    picks = "\n".join(f"{n}. [{r.Domain}] {r.Title} - {r.Creator} ({r.Genre})"
+                      for n, r in enumerate(results.itertuples(), 1))
+    prompt = (f'User preferences: "{preferences}"\n'
+              f"Selected domain: {domain}\n"
+              f"Recommended items:\n"
+              f"{results[['Title', 'Creator', 'Genre', 'Summary']].to_string(index=False)}\n\n"
+              "Explain briefly why each item matches the user's preferences.")
+    response = requests.post(f"{OLLAMA_URL}/generate",
+                             json={"model": LLM_MODEL, "prompt": prompt,
+                                   "stream": False})
+    explanation = response.json().get("response", "")
+    return f"Top Recommendations:\n{picks}\n\nWhy these picks:\n{explanation}"
+
+demo = gr.Interface(
+    fn=recommend,
+    inputs=[gr.Textbox(label="Your interests and preferences", lines=3,
+                       placeholder="e.g., I enjoy artificial intelligence"),
+            gr.Dropdown(choices=["All", "Books", "Movies"], value="All",
+                        label="Domain")],
+    outputs=gr.Textbox(label="Recommendations", lines=15),
+    title="Personalized Recommendation System",
+    description="Choose a domain and describe your interests.")
+
+if __name__ == "__main__":
+    demo.launch()
+
+
+==============================================================================
+ Ex.No 5 - AI Document Analyzer: Summarize, Query, Export
+ File: document_analyzer.py
+==============================================================================
+
+# Install required libraries if not already installed:
+# pip install gradio PyPDF2 python-docx requests
+
+import gradio as gr
+import requests
+from PyPDF2 import PdfReader
+from docx import Document
+import json
+
+# Ollama API setup
+OLLAMA_URL = "http://localhost:11434/api/generate"
+MODEL_NAME = "qwen2.5:0.5b"  # Ensure this model is pulled in Ollama
+
+# Function to extract text from uploaded files
+def extract_text(file):
+    filename = file if isinstance(file, str) else file.name
+    text = ""
+    if filename.endswith(".pdf"):
+        reader = PdfReader(filename)
+        for page in reader.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+    elif filename.endswith(".docx"):
+        doc = Document(filename)
+        text = "\n".join([p.text for p in doc.paragraphs
+                          if p.text.strip() != ""])
+    elif filename.endswith(".txt"):
+        with open(filename, "r", encoding="utf-8") as f:
+            text = f.read()
+    else:
+        return "Unsupported file type."
+    return text.strip()
+
+# Helper function to call Ollama (handles streaming JSON properly)
+def ollama_generate(prompt, max_tokens=1000):
+    try:
+        response = requests.post(
+            OLLAMA_URL,
+            json={
+                "model": MODEL_NAME,
+                "prompt": prompt,
+                "temperature": 0.2,
+                "max_tokens": max_tokens,
+                "stream": True  # enforce streaming
+            },
+            stream=True
+        )
+        full_output = ""
+        for line in response.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                if "response" in obj:
+                    full_output += obj["response"]
+                if obj.get("done", False):
+                    break
+            except json.JSONDecodeError:
+                # Ignore partial lines
+                continue
+        return full_output.strip() if full_output else "No response content."
+    except Exception as e:
+        return f"Error connecting to Ollama API: {e}"
+
+# Function to summarize content and optionally answer a question
+def summarize_content(file, user_question=None):
+    text = extract_text(file)
+    if text.startswith("Unsupported"):
+        return text
+
+    # Summarization prompt
+    base_prompt = f"""
+You are a legal assistant. Summarize the content clearly.
+Content Text:
+{text}
+"""
+    summary = ollama_generate(base_prompt, max_tokens=800)
+
+    # If user asks a question, run Q&A
+    if user_question and user_question.strip() != "":
+        qa_prompt = f"""
+You are a legal assistant. The content text is:
+{text}
+Answer the following question accurately:
+{user_question}
+"""
+        answer = ollama_generate(qa_prompt, max_tokens=500)
+        return (f"---Summary---\n{summary}\n\n---Q&A---\n"
+                f"Question: {user_question}\nAnswer: {answer}")
+
+    return f"---Summary---\n{summary}"
+
+# Gradio Interface
+iface = gr.Interface(
+    fn=summarize_content,
+    inputs=[
+        gr.File(file_types=[".pdf", ".docx", ".txt"], label="Upload Content"),
+        gr.Textbox(lines=2,
+                   placeholder="Optional: Ask a question about this content",
+                   label="Ask Question")
+    ],
+    outputs=gr.Textbox(lines=20,
+                       placeholder="Summary and Q&A will appear here..."),
+    title="Automated Legal Document Analyzer",
+    description="Upload a content and get a structured summary. "
+                "Optionally, ask a question about the content."
+)
+
+iface.launch()
+
+
+==============================================================================
+ Ex.No 6 - AI-Powered Medical Assistant
+ File: medical_assistant.py
+==============================================================================
+
+import requests
+
+# Ollama API settings
+OLLAMA_URL = "http://localhost:11434/api/generate"
+MODEL_NAME = "qwen2.5:0.5b"  # or "qwen:0.5b" depending on your model
+
+# Step 1: Knowledge Base
+knowledge_base = {
+    "cold": {
+        "keywords": ["sneeze", "runny nose", "congestion", "cough"],
+        "advice": "It may be a common cold. Rest, drink warm fluids, and consider over-the-counter cold remedies."
+    },
+    "flu": {
+        "keywords": ["fever", "body ache", "chills", "fatigue"],
+        "advice": "It may be the flu. Stay hydrated, rest, and monitor your temperature."
+    },
+    "migraine": {
+        "keywords": ["headache", "nausea", "sensitivity to light", "sensitivity to sound"],
+        "advice": "It may be a migraine. Rest in a quiet, dark room and consider over-the-counter pain relief."
+    },
+    "indigestion": {
+        "keywords": ["stomach pain", "nausea", "bloating", "heartburn"],
+        "advice": "It may be indigestion. Avoid spicy food, drink water, and try small light meals."
+    }
+}
+
+# Step 2: Knowledge Base Check
+def check_knowledge_base(symptoms):
+    for condition, data in knowledge_base.items():
+        if any(word in symptoms.lower() for word in data["keywords"]):
+            return f"Knowledge Base Suggestion: {data['advice']}"
+    return None
+
+# Step 3: Ask Ollama Qwen
+def ollama_response(symptoms):
+    prompt = f"""
+You are a medical assistant AI.
+Analyze the following symptoms and provide:
+1. Possible common causes.
+2. Basic home care advice.
+3. When to seek professional medical help.
+4. Always include a disclaimer that you are not a doctor.
+Symptoms: {symptoms}
+"""
+    payload = {"model": MODEL_NAME, "prompt": prompt, "stream": False}
+    response = requests.post(OLLAMA_URL, json=payload)
+    if response.status_code == 200:
+        return response.json().get("response", "").strip()
+    else:
+        return f"Error: {response.text}"
+
+# Step 4: Combine KB + Ollama
+def medical_assistant(symptoms):
+    kb_answer = check_knowledge_base(symptoms)
+    if kb_answer:
+        return kb_answer
+    else:
+        return ollama_response(symptoms)
+
+# ---- Interactive User Input ----
+if __name__ == "__main__":
+    print("Medical Assistant (Demo)")
+    print("Type 'exit' to quit.\n")
+    while True:
+        user_input = input("Enter your symptoms: ")
+        if user_input.lower() == "exit":
+            print("Goodbye! Stay healthy.")
+            break
+        print("\nAssistant Response:\n", medical_assistant(user_input), "\n")
